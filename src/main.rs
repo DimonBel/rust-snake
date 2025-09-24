@@ -65,7 +65,6 @@ struct InfoResponse {
     color: String,
     head: String,
     tail: String,
-    version: String,
 }
 
 // Algorithm implementations
@@ -410,11 +409,10 @@ fn get_move(game_state: GameRequest) -> String {
 async fn handle_index() -> Result<impl warp::Reply, Infallible> {
     let info = InfoResponse {
         apiversion: "1".to_string(),
-        author: "rust-battlesnake".to_string(),
-        color: "#FF0000".to_string(),
+        author: "Dumas".to_string(),
+        color: "#fdb0ceff".to_string(),
         head: "default".to_string(),
         tail: "default".to_string(),
-        version: "1.0.0".to_string(),
     };
     Ok(warp::reply::json(&info))
 }
