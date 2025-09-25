@@ -1,5 +1,4 @@
 use actix_web::{web, App, HttpResponse, HttpServer};
-use nalgebra::{DMatrix, DVector};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -15,7 +14,7 @@ struct Board {
     snakes: Vec<Snake>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]  // Add Clone here
 struct Coord {
     x: i32,
     y: i32,
@@ -46,7 +45,7 @@ struct StartResponse {
     color: String,
 }
 
-// Add these strategy-related structs and implementations
+// Move this near other struct definitions
 #[derive(Clone, Debug)]
 struct Move {
     direction: String,
@@ -60,6 +59,111 @@ impl Move {
             score: 0.0,
         }
     }
+}
+
+// Add this helper function early in the file
+fn get_new_position(head: &Coord, direction: &str) -> Coord {
+    match direction {
+        "up" => Coord { x: head.x, y: head.y + 1 },
+        "down" => Coord { x: head.x, y: head.y - 1 },
+        "left" => Coord { x: head.x - 1, y: head.y },
+        "right" => Coord { x: head.x + 1, y: head.y },
+        _ => Coord { x: head.x, y: head.y },
+    }
+}
+
+fn manhattan_distance(a: &Coord, b: &Coord) -> i32 {
+    (a.x - b.x).abs() + (a.y - b.y).abs()
+}
+
+fn is_safe_move(pos: &Coord, board: &Board, snake_length: usize) -> bool {
+    // Check board boundaries
+    if pos.x < 0 || pos.x >= board.width || pos.y < 0 || pos.y >= board.height {
+        return false;
+    }
+
+    // Check snake collisions
+    for snake in &board.snakes {
+        for (i, segment) in snake.body.iter().enumerate() {
+            if pos.x == segment.x && pos.y == segment.y {
+                // Allow moving to tail position if it's going to move
+                if !(i == snake.body.len() - 1 && snake.body.len() == snake_length) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
+// Update evaluate_food to be more efficient and actually use health parameter
+fn evaluate_food(pos: &Coord, board: &Board, health: i32) -> Option<(f64, String)> {
+    let mut nearest_food = None;
+    let mut min_dist = f64::MAX;
+
+    for food in &board.food {
+        let dist = manhattan_distance(pos, food) as f64;
+        if dist < min_dist {
+            min_dist = dist;
+            let dir = if (food.x - pos.x).abs() > (food.y - pos.y).abs() {
+                if food.x > pos.x { "right" } else { "left" }
+            } else {
+                if food.y > pos.y { "up" } else { "down" }
+            }.to_string();
+            nearest_food = Some((dist, dir));
+        }
+    }
+
+    // Adjust score based on health
+    nearest_food.map(|(dist, dir)| {
+        let urgency = if health < 25 { 1.5 } else { 1.0 };
+        (dist * urgency, dir)
+    })
+}
+
+fn calculate_food_score(distance: f64, health: i32) -> f64 {
+    let base_score = 100.0 - distance;
+    
+    // Increase urgency when health is low
+    if health < 25 {
+        base_score * 3.0
+    } else if health < 50 {
+        base_score * 1.5
+    } else {
+        base_score
+    }
+}
+
+fn evaluate_threats(pos: &Coord, board: &Board, you: &Snake) -> f64 {
+    let mut threat_score = 0.0;
+
+    for snake in &board.snakes {
+        if snake.id != you.id {
+            let head_dist = manhattan_distance(pos, &snake.body[0]);
+            
+            // Evaluate head-to-head scenarios
+            if head_dist <= 2 {
+                if you.body.len() <= snake.body.len() {
+                    threat_score -= 150.0; // Strong penalty for risky head-to-head
+                } else {
+                    threat_score += 50.0; // Potential to eliminate shorter snake
+                }
+            }
+        }
+    }
+
+    threat_score
+}
+
+fn evaluate_center_control(pos: &Coord, board: &Board) -> f64 {
+    let center_x = board.width as f64 / 2.0;
+    let center_y = board.height as f64 / 2.0;
+    let dist_from_center = ((pos.x as f64 - center_x).powi(2) + 
+                           (pos.y as f64 - center_y).powi(2)).sqrt();
+    
+    // Prefer positions closer to center
+    25.0 - dist_from_center * 2.0
 }
 
 // Define strategy space for bilinear duel (simplified to 2D for movement directions)
@@ -88,7 +192,7 @@ fn evaluate_moves(mut moves: Vec<Move>, head: &Coord, you: &Snake, board: &Board
         let mut score = 0.0;
         
         // Immediate death check
-        if !is_safe_move(&new_pos, board) {
+        if !is_safe_move(&new_pos, board, you.body.len()) {
             move_option.score = f64::NEG_INFINITY;
             continue;
         }
@@ -206,7 +310,7 @@ fn is_move_safe(new_pos: &Coord, board: &Board, snake_length: usize) -> bool {
 }
 
 // Обновленная функция compute_payoff
-fn compute_payoff(my_move: &str, opp_move: &str, head: &Coord, board: &Board) -> f64 {
+fn compute_payoff(my_move: &str, _opp_move: &str, head: &Coord, board: &Board) -> f64 {
     let new_pos = match my_move {
         "up" => Coord { x: head.x, y: head.y + 1 },
         "down" => Coord { x: head.x, y: head.y - 1 },
@@ -215,63 +319,24 @@ fn compute_payoff(my_move: &str, opp_move: &str, head: &Coord, board: &Board) ->
         _ => return -100.0,
     };
 
-    // Проверяем безопасность хода
+    // Check for immediate death
     if !is_move_safe(&new_pos, board, board.snakes[0].body.len()) {
         return -100.0;
     }
 
     let mut score = 0.0;
 
-    // Выполняем flood fill
+    // Space evaluation
     let mut visited = Vec::new();
     let available_space = flood_fill(board, &new_pos, &mut visited);
-    
-    // Оценка доступного пространства (важнее всего)
-    score += available_space as f64 * 3.0;
+    score += available_space as f64 * 5.0;
 
-    // Избегаем краев поля (если не гонимся за едой)
-    if new_pos.x <= 1 || new_pos.x >= board.width - 2 || 
-       new_pos.y <= 1 || new_pos.y >= board.height - 2 {
-        score -= 15.0;
-    }
-
-    // Оценка расстояния до еды
-    if let Some(nearest_food) = find_nearest_food(&new_pos, board) {
-        let food_distance = manhattan_distance(&new_pos, &nearest_food);
-        // Если здоровье низкое, увеличиваем важность еды
-        if board.snakes[0].health < 50 {
-            score += (100.0 - food_distance as f64) * 2.0;
-        } else {
-            score += (100.0 - food_distance as f64);
-        }
-    }
-
-    // Избегаем ходов, которые могут привести к столкновению с другими змеями
-    for snake in &board.snakes {
-        if snake.id != board.snakes[0].id {  // не наша змея
-            let snake_head = &snake.body[0];
-            let distance = manhattan_distance(&new_pos, snake_head);
-            if distance <= 2 {
-                // Если мы короче другой змеи, избегаем конфронтации
-                if board.snakes[0].body.len() <= snake.body.len() {
-                    score -= 50.0;
-                }
-            }
-        }
+    // Food evaluation
+    if let Some((food_distance, _)) = evaluate_food(&new_pos, board, board.snakes[0].health) {
+        score += 100.0 - food_distance as f64;  // Removed unnecessary parentheses
     }
 
     score
-}
-
-// Вспомогательные функции
-fn manhattan_distance(a: &Coord, b: &Coord) -> i32 {
-    (a.x - b.x).abs() + (a.y - b.y).abs()
-}
-
-fn find_nearest_food(pos: &Coord, board: &Board) -> Option<Coord> {
-    board.food.iter()
-        .min_by_key(|food| manhattan_distance(pos, food))
-        .cloned()
 }
 
 // API endpoints
