@@ -46,54 +46,78 @@ struct StartResponse {
     color: String,
 }
 
+// Add these strategy-related structs and implementations
+#[derive(Clone, Debug)]
+struct Move {
+    direction: String,
+    score: f64,
+}
+
+impl Move {
+    fn new(direction: &str) -> Self {
+        Move {
+            direction: direction.to_string(),
+            score: 0.0,
+        }
+    }
+}
+
 // Define strategy space for bilinear duel (simplified to 2D for movement directions)
 fn bilinear_duel(state: &GameState) -> String {
     let you = &state.you;
     let head = &you.body[0];
     let board = &state.board;
+    
+    let possible_moves = vec![
+        Move::new("up"),
+        Move::new("down"),
+        Move::new("left"),
+        Move::new("right"),
+    ];
 
-    // Define strategy space K for player (snake): probabilities for moves (up, down, left, right)
-    let n = 4; // Four possible moves
-    let moves = vec!["up", "down", "left", "right"];
-    let mut strategy = DVector::from_element(n, 0.25); // Initial uniform strategy
+    // Find best move using weighted scoring
+    let best_move = evaluate_moves(possible_moves, head, you, board);
+    best_move.direction
+}
 
-    // Define payoff matrix M (heuristic-based, 4x4 for simplicity)
-    let mut M = DMatrix::zeros(n, n);
-    for i in 0..n {
-        for j in 0..n {
-            M[(i, j)] = compute_payoff(&moves[i], &moves[j], head, board);
+fn evaluate_moves(mut moves: Vec<Move>, head: &Coord, you: &Snake, board: &Board) -> Move {
+    for move_option in &mut moves {
+        let new_pos = get_new_position(head, &move_option.direction);
+        
+        // Initialize score
+        let mut score = 0.0;
+        
+        // Immediate death check
+        if !is_safe_move(&new_pos, board) {
+            move_option.score = f64::NEG_INFINITY;
+            continue;
         }
+
+        // Space evaluation (weighted highest)
+        let mut visited = Vec::new();
+        let available_space = flood_fill(board, &new_pos, &mut visited);
+        score += available_space as f64 * 5.0; // High weight for available space
+
+        // Food evaluation
+        if let Some((food_dist, food_dir)) = evaluate_food(&new_pos, board, you.health) {
+            let food_score = calculate_food_score(food_dist, you.health);
+            if move_option.direction == food_dir {
+                score += food_score;
+            }
+        }
+
+        // Threat evaluation
+        score += evaluate_threats(&new_pos, board, you);
+
+        // Center control evaluation
+        score += evaluate_center_control(&new_pos, board);
+
+        move_option.score = score;
     }
 
-    // Define constraints for K (simplex: sum of probabilities = 1, non-negative)
-    let m = 1; // One constraint for sum = 1
-    let w = DVector::from_element(n, 1.0); // Weights for sum constraint
-    let b: f64 = 1.0; // Explicitly type b as f64 to resolve ambiguity
-
-    // Opponent strategy space K0 (simplified, assume uniform for now)
-    let m0 = 1;
-    let w0 = DVector::from_element(n, 1.0);
-    let b0 = 1.0;
-
-    // Solve linear program: max sum(lambda_i * b0_i) s.t. x in K and x^T M = sum(lambda_i * w0_i)
-    let lambda = DVector::from_element(m0, 1.0 / m0 as f64); // Simplified lambda
-    let mut x = DVector::zeros(n);
-    for i in 0..n {
-        x[i] = if strategy.iter().all(|&p| p >= 0.0) && (strategy.dot(&w) - b).abs() < 1e-6 {
-            strategy[i]
-        } else {
-            0.25 // Fallback to uniform
-        };
-    }
-
-    // Choose move with highest probability
-    let max_idx = x
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-        .unwrap()
-        .0;
-    moves[max_idx].to_string()
+    // Sort by score and return best move
+    moves.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    moves.into_iter().next().unwrap_or(Move::new("up"))
 }
 
 // Add these after your existing struct definitions
