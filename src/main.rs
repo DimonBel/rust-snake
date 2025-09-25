@@ -158,66 +158,96 @@ fn flood_fill(board: &Board, start: &Coord, visited: &mut Vec<Point>) -> i32 {
     space_count
 }
 
-// Modify your compute_payoff function to use flood fill
-fn compute_payoff(my_move: &str, opp_move: &str, head: &Coord, board: &Board) -> f64 {
-    let new_pos = match my_move {
-        "up" => Coord {
-            x: head.x,
-            y: head.y + 1,
-        },
-        "down" => Coord {
-            x: head.x,
-            y: head.y - 1,
-        },
-        "left" => Coord {
-            x: head.x - 1,
-            y: head.y,
-        },
-        "right" => Coord {
-            x: head.x + 1,
-            y: head.y,
-        },
-        _ => return 0.0,
-    };
-
-    // Basic collision checks
+// Добавьте эту функцию для проверки безопасности хода
+fn is_move_safe(new_pos: &Coord, board: &Board, snake_length: usize) -> bool {
+    // Проверка на выход за пределы поля
     if new_pos.x < 0 || new_pos.x >= board.width || new_pos.y < 0 || new_pos.y >= board.height {
-        return -10.0;
+        return false;
     }
 
+    // Проверка столкновений со змеями
     for snake in &board.snakes {
-        for segment in &snake.body {
+        for (i, segment) in snake.body.iter().enumerate() {
+            // Пропускаем последний сегмент хвоста, так как он движется
+            if i == snake.body.len() - 1 && snake.body.len() == snake_length {
+                continue;
+            }
             if new_pos.x == segment.x && new_pos.y == segment.y {
-                return -10.0;
+                return false;
             }
         }
     }
 
-    // Perform flood fill from the new position
+    true
+}
+
+// Обновленная функция compute_payoff
+fn compute_payoff(my_move: &str, opp_move: &str, head: &Coord, board: &Board) -> f64 {
+    let new_pos = match my_move {
+        "up" => Coord { x: head.x, y: head.y + 1 },
+        "down" => Coord { x: head.x, y: head.y - 1 },
+        "left" => Coord { x: head.x - 1, y: head.y },
+        "right" => Coord { x: head.x + 1, y: head.y },
+        _ => return -100.0,
+    };
+
+    // Проверяем безопасность хода
+    if !is_move_safe(&new_pos, board, board.snakes[0].body.len()) {
+        return -100.0;
+    }
+
+    let mut score = 0.0;
+
+    // Выполняем flood fill
     let mut visited = Vec::new();
     let available_space = flood_fill(board, &new_pos, &mut visited);
+    
+    // Оценка доступного пространства (важнее всего)
+    score += available_space as f64 * 3.0;
 
-    // Get distance to nearest food
-    let food_dist = board
-        .food
-        .iter()
-        .map(|f| ((f.x - new_pos.x).abs() + (f.y - new_pos.y).abs()) as f64)
-        .min_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap_or(100.0);
-
-    // Calculate payoff based on available space and food distance
-    let space_score = available_space as f64 * 2.0;
-    let food_score = 10.0 - food_dist;
-
-    // Combined score
-    let base_payoff = space_score + food_score;
-
-    // Reduce payoff if opponent might move to same space
-    if my_move == opp_move {
-        base_payoff * 0.5
-    } else {
-        base_payoff
+    // Избегаем краев поля (если не гонимся за едой)
+    if new_pos.x <= 1 || new_pos.x >= board.width - 2 || 
+       new_pos.y <= 1 || new_pos.y >= board.height - 2 {
+        score -= 15.0;
     }
+
+    // Оценка расстояния до еды
+    if let Some(nearest_food) = find_nearest_food(&new_pos, board) {
+        let food_distance = manhattan_distance(&new_pos, &nearest_food);
+        // Если здоровье низкое, увеличиваем важность еды
+        if board.snakes[0].health < 50 {
+            score += (100.0 - food_distance as f64) * 2.0;
+        } else {
+            score += (100.0 - food_distance as f64);
+        }
+    }
+
+    // Избегаем ходов, которые могут привести к столкновению с другими змеями
+    for snake in &board.snakes {
+        if snake.id != board.snakes[0].id {  // не наша змея
+            let snake_head = &snake.body[0];
+            let distance = manhattan_distance(&new_pos, snake_head);
+            if distance <= 2 {
+                // Если мы короче другой змеи, избегаем конфронтации
+                if board.snakes[0].body.len() <= snake.body.len() {
+                    score -= 50.0;
+                }
+            }
+        }
+    }
+
+    score
+}
+
+// Вспомогательные функции
+fn manhattan_distance(a: &Coord, b: &Coord) -> i32 {
+    (a.x - b.x).abs() + (a.y - b.y).abs()
+}
+
+fn find_nearest_food(pos: &Coord, board: &Board) -> Option<Coord> {
+    board.food.iter()
+        .min_by_key(|food| manhattan_distance(pos, food))
+        .cloned()
 }
 
 // API endpoints
