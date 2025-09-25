@@ -96,7 +96,69 @@ fn bilinear_duel(state: &GameState) -> String {
     moves[max_idx].to_string()
 }
 
-// Heuristic payoff function
+// Add these after your existing struct definitions
+#[derive(Clone, Eq, PartialEq)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl Point {
+    fn from_coord(coord: &Coord) -> Self {
+        Point {
+            x: coord.x,
+            y: coord.y,
+        }
+    }
+}
+
+// Add this new function
+fn flood_fill(board: &Board, start: &Coord, visited: &mut Vec<Point>) -> i32 {
+    let mut stack = vec![Point::from_coord(start)];
+    let mut space_count = 0;
+    let directions = [(0, 1), (1, 0), (0, -1), (-1, 0)];
+
+    while let Some(current) = stack.pop() {
+        if visited.contains(&current) {
+            continue;
+        }
+
+        // Check if position is valid
+        if current.x < 0
+            || current.x >= board.width
+            || current.y < 0
+            || current.y >= board.height
+        {
+            continue;
+        }
+
+        // Check for collision with snake bodies
+        let is_snake = board.snakes.iter().any(|snake| {
+            snake.body.iter().any(|segment| {
+                segment.x == current.x && segment.y == current.y
+            })
+        });
+
+        if is_snake {
+            continue;
+        }
+
+        visited.push(current.clone());
+        space_count += 1;
+
+        // Add adjacent cells to stack
+        for (dx, dy) in directions.iter() {
+            stack.push(Point {
+                x: current.x + dx,
+                y: current.y + dy,
+            });
+        }
+    }
+
+    space_count
+}
+
+// Modify your compute_payoff function to use flood fill
 fn compute_payoff(my_move: &str, opp_move: &str, head: &Coord, board: &Board) -> f64 {
     let new_pos = match my_move {
         "up" => Coord {
@@ -118,10 +180,11 @@ fn compute_payoff(my_move: &str, opp_move: &str, head: &Coord, board: &Board) ->
         _ => return 0.0,
     };
 
-    // Check for collisions
+    // Basic collision checks
     if new_pos.x < 0 || new_pos.x >= board.width || new_pos.y < 0 || new_pos.y >= board.height {
         return -10.0;
     }
+
     for snake in &board.snakes {
         for segment in &snake.body {
             if new_pos.x == segment.x && new_pos.y == segment.y {
@@ -130,7 +193,11 @@ fn compute_payoff(my_move: &str, opp_move: &str, head: &Coord, board: &Board) ->
         }
     }
 
-    // Check for food
+    // Perform flood fill from the new position
+    let mut visited = Vec::new();
+    let available_space = flood_fill(board, &new_pos, &mut visited);
+
+    // Get distance to nearest food
     let food_dist = board
         .food
         .iter()
@@ -138,8 +205,14 @@ fn compute_payoff(my_move: &str, opp_move: &str, head: &Coord, board: &Board) ->
         .min_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(100.0);
 
-    // Payoff: prefer moves closer to food, penalize risky moves
-    let base_payoff = 10.0 - food_dist;
+    // Calculate payoff based on available space and food distance
+    let space_score = available_space as f64 * 2.0;
+    let food_score = 10.0 - food_dist;
+
+    // Combined score
+    let base_payoff = space_score + food_score;
+
+    // Reduce payoff if opponent might move to same space
     if my_move == opp_move {
         base_payoff * 0.5
     } else {
