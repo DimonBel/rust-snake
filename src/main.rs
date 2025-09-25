@@ -343,7 +343,7 @@ fn compute_payoff(my_move: &str, _opp_move: &str, head: &Coord, board: &Board) -
 async fn index() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({
         "api_version": "1",
-        "author": "xAI",
+        "author": "Dumas",
         "color": "#FF0000",
         "head": "default",
         "tail": "default",
